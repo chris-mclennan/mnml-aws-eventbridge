@@ -364,7 +364,8 @@ fn draw_detail(
 }
 
 fn draw_status(f: &mut Frame, area: Rect, app: &App) {
-    let hint = " 1-9 tab · ↑↓/jk move · o console · y yank ARN · r refresh · q quit ";
+    let hint =
+        " 1-9 tab · ↑↓/jk move · o console · y ARN · L jump (lambda/sqs/sns) · r refresh · q quit ";
     let line = Line::from(vec![
         Span::styled(
             format!(" {} ", app.status),

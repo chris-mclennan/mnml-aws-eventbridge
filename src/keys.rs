@@ -13,6 +13,7 @@ pub enum Action {
     End,
     OpenConsole,
     YankArn,
+    HandoffTarget,
     Refresh,
     SwitchTab(usize),
     NextTab,
@@ -32,6 +33,7 @@ pub fn handle(key: KeyEvent, _app: &App) -> Option<Action> {
         KeyCode::End | KeyCode::Char('G') => Some(Action::End),
         KeyCode::Char('o') | KeyCode::Enter => Some(Action::OpenConsole),
         KeyCode::Char('y') => Some(Action::YankArn),
+        KeyCode::Char('L') => Some(Action::HandoffTarget),
         KeyCode::Char('r') => Some(Action::Refresh),
         KeyCode::Tab => Some(Action::NextTab),
         KeyCode::BackTab => Some(Action::PrevTab),
@@ -51,6 +53,7 @@ pub async fn apply(action: Action, app: &mut App) -> bool {
         Action::End => app.move_selection(i32::MAX as isize),
         Action::OpenConsole => app.open_console(),
         Action::YankArn => app.yank_arn(),
+        Action::HandoffTarget => app.handoff_target(),
         Action::Refresh => app.refresh_active(),
         Action::NextTab => {
             let next = (app.active_tab + 1) % app.tabs.len();

@@ -278,6 +278,70 @@ impl App {
             Err(e) => self.status = format!("copy failed: {e}"),
         }
     }
+
+    /// `L` — cross-sibling jump. When focused on a rule with at least
+    /// one target, parse the first target's ARN to identify its AWS
+    /// service, then spawn the matching family sibling. Mirrors the
+    /// SNS subscription-handoff pattern.
+    ///
+    /// Supported services (matched against `Target::service()`):
+    /// - `lambda`  → spawn mnml-aws-lambda
+    /// - `sqs`     → spawn mnml-aws-sqs
+    /// - `sns`     → spawn mnml-aws-sns
+    /// - `states`  → would map to mnml-aws-step-functions (not built)
+    /// - other     → toast with helpful status
+    ///
+    /// On rules with multiple targets, takes the first; the status
+    /// notes the total count so the user knows there are more.
+    pub fn handoff_target(&mut self) {
+        let Some(item) = self.focused_item() else {
+            self.status = "no item under cursor".into();
+            return;
+        };
+        let crate::eventbridge::Item::Rule(rule) = item else {
+            self.status = "L jump is only available on rules".into();
+            return;
+        };
+        let rule_name = rule.name.clone();
+        let targets = match &self.focused_targets {
+            Some((_, t)) if !t.is_empty() => t.clone(),
+            _ => {
+                self.status =
+                    format!("no targets loaded for `{rule_name}` (wait for fetch then retry)");
+                return;
+            }
+        };
+        let target = &targets[0];
+        let service = target.service();
+        let target_name = target.arn.rsplit(':').next().unwrap_or(&target.arn);
+        let suffix = if targets.len() > 1 {
+            format!(" (1 of {} targets)", targets.len())
+        } else {
+            String::new()
+        };
+
+        let binary = match service.as_str() {
+            "lambda" => "mnml-aws-lambda",
+            "sqs" => "mnml-aws-sqs",
+            "sns" => "mnml-aws-sns",
+            other => {
+                self.status =
+                    format!("no sibling for `{other}` target — supported: lambda, sqs, sns");
+                return;
+            }
+        };
+
+        match std::process::Command::new(binary).spawn() {
+            Ok(_) => {
+                self.status = format!(
+                    "launched {binary} — navigate to {target_name}{suffix} (auto-scope is v0.x)"
+                );
+            }
+            Err(e) => {
+                self.status = format!("spawn {binary} failed (install it?): {e}");
+            }
+        }
+    }
 }
 
 #[cfg(test)]
