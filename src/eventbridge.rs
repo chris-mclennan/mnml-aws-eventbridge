@@ -130,6 +130,99 @@ pub fn list_event_buses(region: Option<&str>) -> Result<Vec<EventBus>> {
     Ok(all)
 }
 
+/// One target of an EventBridge rule. The AWS API returns more
+/// fields (RoleArn, RetryPolicy, DeadLetterConfig, InputPath, …)
+/// but the detail panel renders just identity + the input snippet
+/// for now — we can grow this lazily as users want richer detail.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Target {
+    #[serde(rename = "Id")]
+    pub id: String,
+    #[serde(rename = "Arn")]
+    pub arn: String,
+    #[serde(rename = "Input", default)]
+    pub input: Option<String>,
+    #[serde(rename = "InputPath", default)]
+    pub input_path: Option<String>,
+    #[serde(rename = "RoleArn", default)]
+    pub role_arn: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct ListTargetsResponse {
+    #[serde(rename = "Targets")]
+    targets: Vec<Target>,
+    #[serde(rename = "NextToken", default)]
+    next_token: Option<String>,
+}
+
+impl Target {
+    /// Pretty service name extracted from an ARN, for the per-target
+    /// summary line in the detail panel. `arn:aws:lambda:…` → `lambda`;
+    /// `arn:aws:sns:…` → `sns`. Falls back to the raw ARN if we can't
+    /// parse a service.
+    pub fn service(&self) -> String {
+        self.arn
+            .split(':')
+            .nth(2)
+            .filter(|s| !s.is_empty())
+            .unwrap_or(&self.arn)
+            .to_string()
+    }
+}
+
+/// Run `aws events list-targets-by-rule`. Paginates.
+pub fn list_targets_by_rule(
+    rule: &str,
+    event_bus_name: &str,
+    region: Option<&str>,
+) -> Result<Vec<Target>> {
+    let mut all = Vec::new();
+    let mut token: Option<String> = None;
+
+    loop {
+        let mut cmd = Command::new("aws");
+        cmd.args([
+            "events",
+            "list-targets-by-rule",
+            "--rule",
+            rule,
+            "--event-bus-name",
+            event_bus_name,
+            "--output",
+            "json",
+        ]);
+        if let Some(r) = region {
+            cmd.args(["--region", r]);
+        }
+        if let Some(t) = &token {
+            cmd.args(["--next-token", t]);
+        }
+
+        let output = cmd
+            .output()
+            .with_context(|| format!("spawn `aws events list-targets-by-rule` for {rule}"))?;
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            return Err(anyhow!(
+                "aws events list-targets-by-rule failed for {rule}: {}",
+                stderr.trim()
+            ));
+        }
+
+        let resp: ListTargetsResponse = serde_json::from_slice(&output.stdout)
+            .with_context(|| "parse list-targets-by-rule JSON")?;
+        all.extend(resp.targets);
+
+        match resp.next_token {
+            Some(t) if !t.is_empty() => token = Some(t),
+            _ => break,
+        }
+    }
+
+    Ok(all)
+}
+
 pub fn list_rules(event_bus_name: &str, region: Option<&str>) -> Result<Vec<Rule>> {
     let mut all = Vec::new();
     let mut token: Option<String> = None;
@@ -230,6 +323,52 @@ mod tests {
         let json = r#"{"Rules": [], "NextToken": "tok"}"#;
         let resp: ListRulesResponse = serde_json::from_str(json).unwrap();
         assert_eq!(resp.next_token.as_deref(), Some("tok"));
+    }
+
+    #[test]
+    fn parses_list_targets_response() {
+        let json = r#"{
+            "Targets": [
+                {
+                    "Id": "1",
+                    "Arn": "arn:aws:lambda:us-east-1:1:function:my-fn",
+                    "Input": "{\"foo\":\"bar\"}"
+                },
+                {
+                    "Id": "2",
+                    "Arn": "arn:aws:sns:us-east-1:1:my-topic"
+                }
+            ]
+        }"#;
+        let resp: ListTargetsResponse = serde_json::from_str(json).unwrap();
+        assert_eq!(resp.targets.len(), 2);
+        assert_eq!(resp.targets[0].service(), "lambda");
+        assert_eq!(resp.targets[1].service(), "sns");
+        assert!(resp.targets[0].input.is_some());
+    }
+
+    #[test]
+    fn target_service_extracted_from_arn() {
+        let t = Target {
+            id: "1".into(),
+            arn: "arn:aws:states:us-east-1:1:stateMachine:foo".into(),
+            input: None,
+            input_path: None,
+            role_arn: None,
+        };
+        assert_eq!(t.service(), "states");
+    }
+
+    #[test]
+    fn target_service_falls_back_to_raw_when_unparseable() {
+        let t = Target {
+            id: "1".into(),
+            arn: "not-an-arn".into(),
+            input: None,
+            input_path: None,
+            role_arn: None,
+        };
+        assert_eq!(t.service(), "not-an-arn");
     }
 
     #[test]

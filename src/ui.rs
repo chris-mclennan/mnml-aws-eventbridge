@@ -73,7 +73,12 @@ pub fn draw(f: &mut Frame, app: &App) {
         .constraints([Constraint::Percentage(45), Constraint::Percentage(55)])
         .split(chunks[1]);
     draw_list(f, body[0], app.active());
-    draw_detail(f, body[1], app.focused_item());
+    draw_detail(
+        f,
+        body[1],
+        app.focused_item(),
+        app.focused_targets.as_ref().map(|(_, t)| t.as_slice()),
+    );
     draw_status(f, chunks[2], app);
 }
 
@@ -181,7 +186,12 @@ fn state_color_for(item: &Item) -> Style {
     }
 }
 
-fn draw_detail(f: &mut Frame, area: Rect, item: Option<&Item>) {
+fn draw_detail(
+    f: &mut Frame,
+    area: Rect,
+    item: Option<&Item>,
+    targets: Option<&[crate::eventbridge::Target]>,
+) {
     let title = " detail ";
     let Some(item) = item else {
         let p = Paragraph::new("(no item selected)")
@@ -282,6 +292,68 @@ fn draw_detail(f: &mut Frame, area: Rect, item: Option<&Item>) {
                         format!(" {ln}"),
                         Style::default().fg(Color::Gray),
                     )));
+                }
+            }
+            // Targets: every entry `list-targets-by-rule` returned for
+            // this rule. One row per target showing service + truncated
+            // ARN tail; a Input snippet line below when present.
+            if let Some(targets) = targets {
+                lines.push(Line::from(""));
+                let header = if targets.is_empty() {
+                    " Targets (0) ".to_string()
+                } else {
+                    format!(" Targets ({}) ", targets.len())
+                };
+                lines.push(Line::from(vec![Span::styled(
+                    header,
+                    Style::default().fg(Color::DarkGray),
+                )]));
+                if targets.is_empty() {
+                    lines.push(Line::from(Span::styled(
+                        " (none — rule has no targets configured)",
+                        Style::default()
+                            .fg(Color::DarkGray)
+                            .add_modifier(Modifier::DIM),
+                    )));
+                } else {
+                    for t in targets.iter().take(8) {
+                        let service = t.service();
+                        let arn_tail = t
+                            .arn
+                            .rsplit(':')
+                            .next()
+                            .filter(|s| !s.is_empty())
+                            .unwrap_or(&t.arn);
+                        lines.push(Line::from(vec![
+                            Span::styled(
+                                format!(" {service:<10} "),
+                                Style::default().fg(Color::Cyan),
+                            ),
+                            Span::styled(arn_tail.to_string(), Style::default().fg(Color::Gray)),
+                        ]));
+                        if let Some(input) = &t.input {
+                            let snippet: String = input.chars().take(60).collect();
+                            let suffix = if input.chars().count() > 60 {
+                                "…"
+                            } else {
+                                ""
+                            };
+                            lines.push(Line::from(Span::styled(
+                                format!("     input: {snippet}{suffix}"),
+                                Style::default()
+                                    .fg(Color::DarkGray)
+                                    .add_modifier(Modifier::DIM),
+                            )));
+                        }
+                    }
+                    if targets.len() > 8 {
+                        lines.push(Line::from(Span::styled(
+                            format!("     … {} more", targets.len() - 8),
+                            Style::default()
+                                .fg(Color::DarkGray)
+                                .add_modifier(Modifier::DIM),
+                        )));
+                    }
                 }
             }
         }

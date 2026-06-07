@@ -72,6 +72,12 @@ pub struct App {
     pub tabs: Vec<TabState>,
     pub active_tab: usize,
     pub status: String,
+    /// Lazily-loaded targets for the focused rule. `Some((cache_key,
+    /// targets))` where `cache_key` is `"<bus>::<rule>"`; `None`
+    /// when no rule is focused or the lookup hasn't run yet for the
+    /// current selection. Re-fetched on every cursor move so the
+    /// detail panel always shows the right rule's targets.
+    pub focused_targets: Option<(String, Vec<crate::eventbridge::Target>)>,
 }
 
 impl App {
@@ -90,8 +96,10 @@ impl App {
             tabs,
             active_tab: 0,
             status: String::new(),
+            focused_targets: None,
         };
         app.refresh_active();
+        app.ensure_focused_targets_loaded();
         Ok(app)
     }
 
@@ -112,14 +120,53 @@ impl App {
     }
 
     pub fn move_selection(&mut self, delta: isize) {
-        let tab = self.active_mut();
-        if tab.data.items.is_empty() {
+        {
+            let tab = self.active_mut();
+            if tab.data.items.is_empty() {
+                return;
+            }
+            let n = tab.data.items.len() as isize;
+            let cur = tab.data.selected as isize;
+            let next = (cur + delta).clamp(0, n - 1);
+            tab.data.selected = next as usize;
+        }
+        // Selection moved → refresh targets if the new focus is a rule.
+        self.ensure_focused_targets_loaded();
+    }
+
+    /// Reload targets for the focused rule if the cache key is stale.
+    /// No-op when the focus is a bus (buses don't have targets) or
+    /// when nothing's focused.
+    pub fn ensure_focused_targets_loaded(&mut self) {
+        let Some(item) = self.focused_item() else {
+            self.focused_targets = None;
+            return;
+        };
+        let crate::eventbridge::Item::Rule(rule) = item else {
+            self.focused_targets = None;
+            return;
+        };
+        let bus = rule
+            .event_bus_name
+            .clone()
+            .unwrap_or_else(|| "default".into());
+        let rule_name = rule.name.clone();
+        let cache_key = format!("{bus}::{rule_name}");
+        if let Some((k, _)) = &self.focused_targets
+            && k == &cache_key
+        {
             return;
         }
-        let n = tab.data.items.len() as isize;
-        let cur = tab.data.selected as isize;
-        let next = (cur + delta).clamp(0, n - 1);
-        tab.data.selected = next as usize;
+        let region = self.active().spec.region.clone();
+        match crate::eventbridge::list_targets_by_rule(&rule_name, &bus, region.as_deref()) {
+            Ok(targets) => {
+                self.focused_targets = Some((cache_key, targets));
+            }
+            Err(e) => {
+                self.status = format!("targets: {e}");
+                self.focused_targets = Some((cache_key, vec![]));
+            }
+        }
     }
 
     pub fn refresh_active(&mut self) {
